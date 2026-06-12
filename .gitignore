@@ -1,0 +1,13 @@
+# Secrets — never push the bot token or backup key
+.env
+
+# User data stays local / on the cloud volume
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Test artifacts
+test_receipt.png
+test_receipts.xlsx
