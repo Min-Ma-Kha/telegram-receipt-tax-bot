@@ -459,15 +459,40 @@ def acquire_single_instance_lock() -> socket.socket:
         s.listen(1)
         return s
     except OSError:
-        raise SystemExit("The bot is already running — no need to start it twice.")
+        print("The bot is already running — no need to start it twice.")
+        raise SystemExit(3)
+
+
+def wait_for_network(host: str = "api.telegram.org", port: int = 443) -> None:
+    """Block until Telegram is reachable.
+
+    When the bot auto-starts at login, WiFi is often not connected yet.
+    Instead of crashing, we wait quietly and start the moment the internet
+    comes up. Retries forever with a gentle backoff.
+    """
+    import time
+    waited, delay = 0, 3
+    while True:
+        try:
+            socket.create_connection((host, port), timeout=5).close()
+            if waited:
+                log.info("Internet is up after %ss of waiting — starting now.", waited)
+            return
+        except OSError:
+            if waited == 0:
+                log.info("No internet yet — waiting for WiFi to connect…")
+            time.sleep(delay)
+            waited += delay
+            delay = min(int(delay * 1.5), 30)
 
 
 def main() -> None:
     if not TOKEN or "PASTE" in TOKEN:
-        raise SystemExit(
-            "No bot token. Open the .env file and set TELEGRAM_BOT_TOKEN "
-            "to the token @BotFather gave you.")
+        print("No bot token. Open the .env file and set TELEGRAM_BOT_TOKEN "
+              "to the token @BotFather gave you.")
+        raise SystemExit(4)
     lock = acquire_single_instance_lock()  # noqa: F841 — held for process lifetime
+    wait_for_network()
     start_backup_server()
     app = (Application.builder().token(TOKEN)
            # Generous timeouts: this connection sometimes stalls on TLS setup.
@@ -490,9 +515,12 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     log.info("Receipt Tax Bot running — press Ctrl+C to stop.")
+    # bootstrap_retries=-1: if the FIRST connection to Telegram stalls (common
+    #   on just-connected WiFi), keep retrying forever instead of crashing.
     # drop_pending_updates=False: receipts sent while the PC was off sit in
-    # Telegram's queue (~24h) and are processed one by one on startup.
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+    #   Telegram's queue (~24h) and are processed one by one on startup.
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False,
+                    bootstrap_retries=-1)
 
 
 if __name__ == "__main__":
