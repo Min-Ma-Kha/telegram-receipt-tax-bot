@@ -69,10 +69,24 @@ and send it a photo of a receipt. Done — it replies with the tax and saves it.
 
 ---
 
-## 🔌 What if my PC is off?
+## 🔌 What if my PC is off, or starts before WiFi connects?
 
 No receipt is lost. Telegram holds your messages in a queue, and the moment
 your PC starts again the bot processes them **one by one, in order**.
+
+The bot is built to start itself reliably and stay running:
+
+- **Auto-start with Windows** — `setup.bat` offers to launch the bot
+  (minimized) every time you log in, so you rarely have to start it by hand.
+- **Waits for the internet** — if the bot starts before WiFi has connected
+  (common right after logging in), it doesn't crash. It waits quietly and
+  begins the moment the connection is up.
+- **Survives a flaky first connection** — even after WiFi connects, the very
+  first request to Telegram can stall on some networks. The bot keeps retrying
+  instead of giving up.
+- **Auto-restarts on a crash** — if it ever stops unexpectedly, `run_bot.bat`
+  restarts it automatically after 10 seconds. (It won't restart when *you*
+  stop it on purpose, or when it's already running.)
 
 One limit (Telegram's, not ours): the queue holds messages for about
 **24 hours**. If your PC was off longer than that, just re-send the photos —
@@ -102,6 +116,8 @@ receipts (Excel locks files while they're open).
 | `python is not recognized` | Run `setup.bat` again; if it persists, install Python from python.org and tick **"Add python.exe to PATH"** |
 | Bot doesn't reply | Is the bot window running? Double-click `run_bot.bat`. Check you messaged YOUR bot's username |
 | "The bot is already running" | Fine — it's already on. There's nothing to do |
+| Started before WiFi connected | Nothing to do — the bot waits for the internet and starts on its own once you're online |
+| Window says "Restarting in 10 seconds" | Normal self-healing after a hiccup — leave it; it comes back by itself |
 | Misread a number | `/fix tax 3.56` (or `total`, `store`, `date`) |
 | Can't read receipt at all | Flatten it, good light, shoot from straight above — or `/add <total> <tax> <store>` |
 | Want only certain people to use your bot | Put their numeric IDs (from @userinfobot) in `ALLOWED_USER_IDS=` in `.env`, then restart the bot |
