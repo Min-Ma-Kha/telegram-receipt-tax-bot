@@ -60,7 +60,8 @@ and send it a photo of a receipt. Done — it replies with the tax and saves it.
 | send a photo 📸 | Reads & stores the receipt |
 | `/summary` | Total spent + total sales tax, all time and per year |
 | `/year 2026` | Totals for one year (your tax-deduction number) |
-| `/export` | Sends you your Excel file |
+| `/report` | Full year-end summary **+ the Excel file** for a year (default: this year). `/report 2026` for a specific year |
+| `/export` | Sends you your Excel file. `/export 2026` for a specific year |
 | `/last` | Shows your last 5 receipts |
 | `/add 46.77 3.56 Walmart` | Manual entry without a photo (total, tax, store) |
 | `/fix tax 3.56` | Corrects the last receipt (`tax`, `total`, `subtotal`, `store`, `date`) |
@@ -94,18 +95,37 @@ takes seconds, and the duplicate detector makes re-sending always safe.
 
 ---
 
+## 🎉 Automatic year-end report (New Year's Day)
+
+Each calendar year is kept in its **own Excel file**, so years never mix.
+On **January 1st**, the bot automatically sends you a message with last
+year's full summary — total spent and total sales tax — **plus the complete
+Excel file** for your taxes, then quietly starts a fresh file for the new
+year.
+
+If your PC happens to be off at midnight on Jan 1, no problem: the report is
+sent the next time the bot comes online in the new year, and only once.
+
+Want it sooner, or any time? Use **`/report`** (this year) or
+**`/report 2026`** (a specific year) to get the same summary + file on demand.
+
 ## 📦 Where is my data?
 
 Everything is in the `data` folder next to the bot:
 
-- `data/users/<your-telegram-id>/receipts.xlsx` — your receipts, one row each,
-  plus a **Summary** sheet with per-year totals (live Excel formulas).
+- `data/users/<your-telegram-id>/receipts_<year>.xlsx` — one workbook **per
+  year**, each receipt a row, plus a **Summary** sheet with that year's totals
+  (live Excel formulas).
 - `data/users/<your-telegram-id>/photos/` — every receipt photo, kept as your
   audit record.
 
 Each Telegram user gets their own folder — people can share one bot without
 ever seeing each other's data. Close the Excel file before sending new
 receipts (Excel locks files while they're open).
+
+> Upgrading from an older version? The first time the new bot starts it
+> automatically splits your old `receipts.xlsx` into per-year files (your old
+> file is kept as `receipts.pre-split-backup.xlsx`, just in case).
 
 ---
 

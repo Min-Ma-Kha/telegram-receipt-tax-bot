@@ -28,6 +28,7 @@ import socket
 import threading
 import zipfile
 from datetime import datetime
+from datetime import time as dtime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -178,10 +179,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📸 Just send me a *photo of a receipt* — I'll read the sales tax, "
         "store it in your own private Excel file, and keep running totals. "
         "Your data is yours alone — every user has separate storage.\n\n"
+        "📅 Each year gets its own file, and on *January 1st* I'll "
+        "automatically send you last year's summary + Excel file for your "
+        "taxes. You can also grab it any time with /report.\n\n"
         "*Commands*\n"
         "/summary — total spent & tax (all time + per year)\n"
         "/year 2026 — totals for one year\n"
-        "/export — get your Excel file\n"
+        "/report — full summary + Excel file for a year (default: this year)\n"
+        "/export — get your Excel file (add a year, e.g. /export 2026)\n"
         "/last — last 5 receipts\n"
         "/add 46.77 3.56 Walmart — manual entry without a photo\n"
         "/fix tax 3.56 — correct the last receipt (tax/total/subtotal/store/date)\n"
@@ -206,7 +211,7 @@ async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for y, d in s["per_year"].items():
         lines.append(f"*{y}* — {d['count']} receipts · spent {fmt_money(d['spent'])} "
                      f"· tax *{fmt_money(d['tax'])}*")
-    lines.append("\n📤 /export for the full Excel file")
+    lines.append("\n📤 /export for the Excel file · 📅 /report for a year-end summary")
     await reply(update.message, "\n".join(lines), parse_mode="Markdown")
 
 
@@ -230,19 +235,84 @@ async def cmd_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown")
 
 
+def _pick_year(args, years: list[int]) -> int | None:
+    """Year from a command arg, else the current year if present, else the
+    latest year with data."""
+    if args and args[0].isdigit() and len(args[0]) == 4:
+        return int(args[0])
+    if not years:
+        return None
+    now = datetime.now().year
+    return now if now in years else years[-1]
+
+
+async def send_year_report(bot, chat_id, uid, year: int, *, year_end=False) -> bool:
+    """Send the summary message + that year's Excel file. Shared by /report
+    and the automatic January 1st job. Returns False if the year has no data."""
+    s = storage.get_summary(uid, year)
+    if not s["count"]:
+        return False
+    if year_end:
+        head = (f"🎉 *{year} is a wrap!*\nHappy New Year! Here's everything you "
+                f"tracked in {year} — keep this for your taxes:")
+    else:
+        head = f"📅 *{year} summary*"
+    text = (f"{head}\n\n"
+            f"🧾 Receipts: {s['count']}\n"
+            f"💰 Total spent: {fmt_money(s['spent'])}\n"
+            f"🏛 Total sales tax: *{fmt_money(s['tax'])}*\n\n"
+            f"That's your deductible sales tax figure for {year}.")
+    if year_end:
+        text += ("\n\n📂 A fresh file has started for the new year, so your "
+                 "years stay neatly separate.")
+    await _retry(lambda: bot.send_message(chat_id, text, parse_mode="Markdown"))
+
+    path = storage.excel_path(uid, year)
+    if os.path.exists(path):
+        def _send():
+            f = open(path, "rb")
+            return bot.send_document(chat_id, f, filename=f"receipts_{year}.xlsx",
+                                     caption=f"📑 Your full {year} receipts file.")
+        await _retry(_send)
+    return True
+
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not authorized(update):
+        return
+    uid = update.effective_user.id
+    years = storage.years_with_data(uid)
+    if not years:
+        await reply(update.message, "No receipts yet — send me a photo of one! 📸")
+        return
+    year = _pick_year(context.args or [], years)
+    sent = await send_year_report(context.bot, update.effective_chat.id, uid, year)
+    if not sent:
+        await reply(update.message,
+            f"No receipts for {year}. You have: " + ", ".join(map(str, years)))
+
+
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update):
         return
     uid = update.effective_user.id
-    if not storage.excel_exists(uid):
+    years = storage.years_with_data(uid)
+    if not years:
         await reply(update.message, "No receipts yet — nothing to export.")
         return
+    year = _pick_year(context.args or [], years)
+    if year not in years:
+        await reply(update.message,
+            f"No {year} file yet. You have: " + ", ".join(map(str, years)))
+        return
+    others = ", ".join(str(y) for y in years if y != year)
+    extra = f" Other years: {others}" if others else ""
 
     def _send():
-        f = open(storage.excel_path(uid), "rb")
+        f = open(storage.excel_path(uid, year), "rb")
         return update.message.reply_document(
-            f, filename="receipts.xlsx",
-            caption="📊 All your receipts. The Summary sheet has per-year totals.")
+            f, filename=f"receipts_{year}.xlsx",
+            caption=f"📊 Your {year} receipts. The Summary sheet has the totals.{extra}")
 
     await _retry(_send)
 
@@ -450,6 +520,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start for help.")
 
 
+async def year_end_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send each user last year's summary + Excel file, once, in the new year.
+
+    Runs daily AND shortly after startup, so even if the PC was off at
+    midnight on Jan 1 the report goes out the next time the bot is online.
+    A per-user flag file makes sure it's sent exactly once.
+    """
+    last_year = datetime.now().year - 1
+    for uid in storage.all_user_ids():
+        if storage.is_reported(uid, last_year):
+            continue
+        if last_year not in storage.years_with_data(uid):
+            continue
+        try:
+            sent = await send_year_report(context.bot, uid, uid, last_year,
+                                          year_end=True)
+            if sent:
+                storage.mark_reported(uid, last_year)
+                log.info("Sent %s year-end report to user %s", last_year, uid)
+        except Exception:
+            log.exception("Could not send year-end report to user %s", uid)
+
+
 def acquire_single_instance_lock() -> socket.socket:
     """Only one copy of the bot may run (two copies fight over Telegram
     polling). Holding a local port is a simple cross-process lock."""
@@ -493,6 +586,9 @@ def main() -> None:
         raise SystemExit(4)
     lock = acquire_single_instance_lock()  # noqa: F841 — held for process lifetime
     wait_for_network()
+    migrated = storage.migrate_all()
+    if migrated:
+        log.info("Migrated %s user(s) to per-year Excel files.", migrated)
     start_backup_server()
     app = (Application.builder().token(TOKEN)
            # Generous timeouts: this connection sometimes stalls on TLS setup.
@@ -506,6 +602,8 @@ def main() -> None:
     app.add_handler(CommandHandler("summary", cmd_summary))
     app.add_handler(CommandHandler("total", cmd_summary))
     app.add_handler(CommandHandler("year", cmd_year))
+    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("yearend", cmd_report))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("excel", cmd_export))
     app.add_handler(CommandHandler("last", cmd_last))
@@ -514,6 +612,17 @@ def main() -> None:
     app.add_handler(CommandHandler("delete", cmd_delete))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Year-end reports: check daily at 00:05 local time, and ~20s after startup
+    # (covers the PC being off at midnight on Jan 1).
+    if app.job_queue is not None:
+        local_tz = datetime.now().astimezone().tzinfo
+        app.job_queue.run_daily(year_end_job, time=dtime(0, 5, tzinfo=local_tz))
+        app.job_queue.run_once(year_end_job, when=20)
+    else:
+        log.warning("JobQueue unavailable — automatic year-end reports are off. "
+                    "Install with: pip install \"python-telegram-bot[job-queue]\"")
+
     log.info("Receipt Tax Bot running — press Ctrl+C to stop.")
     # bootstrap_retries=-1: if the FIRST connection to Telegram stalls (common
     #   on just-connected WiFi), keep retrying forever instead of crashing.
